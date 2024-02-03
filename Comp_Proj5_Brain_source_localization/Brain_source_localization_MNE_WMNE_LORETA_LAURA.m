@@ -1,0 +1,643 @@
+clc;
+clear all;
+cd('C:\Users\ASUS\OneDrive\Desktop\uni\simisterm7\eeg\Comp_HW5');
+%%
+Electrodes = load('ElecPosXYZ').ElecPos;
+N_electrods = length(Electrodes);
+EEG_Interictal = load('Interictal.mat').Interictal;
+length_ictal = length(EEG_Interictal);
+fs = 1024;
+
+ModelParams.R = [8 8.5 9.2] ;
+ModelParams.Sigma = [3.3e-3 8.25e-5 3.3e-3];
+ModelParams.Lambda = [.5979 .2037 .0237];
+ModelParams.Mu = [.6342 .9364 1.0362];
+
+Resolution = 1 ;
+[LocMat,GainMat] = ForwardModel_3shell(Resolution, ModelParams) ;
+figure();
+scatter3(LocMat(1, :), LocMat(2, :), LocMat(3, :),'.');
+xlabel('x');
+ylabel('y');
+zlabel('z');
+title('Dipoles');
+%% 
+label = cell(1, N_electrods);
+pos = zeros(3, N_electrods);
+for i = 1:N_electrods
+    label{i} = Electrodes{i}.Name;
+    pos(:, i) = Electrodes{i}.XYZ;
+end
+figure();
+scatter3(LocMat(1, :), LocMat(2, :), LocMat(3, :),'.');
+hold on
+scatter3(ModelParams.R(3)*pos(1, :), ModelParams.R(3)*pos(2, :), ModelParams.R(3)*pos(3, :), 'r');
+textscatter3(ModelParams.R(3)*pos(1, :), ModelParams.R(3)*pos(2, :), ModelParams.R(3)*pos(3, :), label);
+xlabel('x');
+ylabel('y');
+zlabel('z');
+title('Dipoles and Electrodes');
+%% 
+random_index =1279;
+newloc = LocMat(:, random_index);
+normalized_location = newloc/norm(newloc);
+figure();
+scatter3(LocMat(1, :), LocMat(2, :), LocMat(3, :), '.');
+hold on
+scatter3(ModelParams.R(3)*pos(1, :), ModelParams.R(3)*pos(2, :), ModelParams.R(3)*pos(3, :), 'r');
+textscatter3(ModelParams.R(3)*pos(1, :), ModelParams.R(3)*pos(2, :), ModelParams.R(3)*pos(3, :), label);
+plot3([newloc(1), newloc(1)+normalized_location(1)], [newloc(2), newloc(2)+normalized_location(2)], [newloc(3), newloc(3)+normalized_location(3)], 'g-*')
+xlabel('x');
+ylabel('y');
+zlabel('z');
+title('adding new Dipole randomly');
+%% 
+M_spik = GainMat(:, 3*(random_index-1)+1:3*random_index)*normalized_location*EEG_Interictal(1, :);
+figure();
+t = 0:1/fs:(length_ictal-1)/fs;
+for i = 1:21
+    subplot(4,6, i);
+    plot(t, M_spik(i, :));
+    xlabel('Time (s)');
+    title(["V spiky dipol on electrod " label{i}]);
+end
+%%
+
+M_mean=zeros(1,21);
+for i = 1:21
+    signal=M_spik(i,:);
+    half_max=max(signal)/2;
+    [peaks, locs] = findpeaks(signal);
+    peaks=peaks(peaks>half_max);
+    locs=locs(peaks>half_max);
+    avgPeaks = 0;
+    for j = 1:length(peaks)
+        center = locs(j);
+        window = center-3:center+3;
+        avgPeaks = sum(signal(window));
+    end
+    avgPeaks=avgPeaks/length(peaks);
+    M_mean(i) = avgPeaks;
+end
+
+
+
+normalized_mean_potential = (M_mean-min(M_mean))/(max(M_mean)-min(M_mean));
+figure();
+scatter3(LocMat(1, :), LocMat(2, :), LocMat(3, :),  '.');
+hold on
+scatter3(ModelParams.R(3)*pos(1, :), ModelParams.R(3)*pos(2, :), ModelParams.R(3)*pos(3, :), '*', 'CData', normalized_mean_potential);
+textscatter3(ModelParams.R(3)*pos(1, :), ModelParams.R(3)*pos(2, :), ModelParams.R(3)*pos(3, :)-0.5, label);
+colorbar;
+xlabel('x');
+ylabel('y');
+zlabel('z');
+title('Mean Potential');
+%% 
+figure();
+Display_Potential_3D(ModelParams.R(3), normalized_mean_potential);
+%% 
+MNE_alpha = 1;
+Q_MNE = GainMat'*(pinv(GainMat*GainMat'+MNE_alpha*eye(N_electrods))*M_mean');
+dipoles_N = length(LocMat);
+Omega = zeros(dipoles_N, dipoles_N);
+for i = 1:dipoles_N
+    A = 0;
+    for j = 1:21
+        A = A+GainMat(j, 3*(i-1)+1:3*i)*GainMat(j, 3*(i-1)+1:3*i)';
+    end
+    Omega(i, i) = sqrt(A);
+end
+W = kron(Omega, eye(3));
+WMNE_alpha = 1;
+Q_WMNE = pinv(W'*W)*GainMat'*pinv(GainMat*pinv(W'*W)*GainMat'+WMNE_alpha*eye(N_electrods))*M_mean';
+
+%% 
+MNE_moments = zeros(dipoles_N, 4);
+WMNE_moments = zeros(dipoles_N, 4);
+for i = 1:dipoles_N
+    MNE_moments(i, 1) = norm(Q_MNE(3*(i-1)+1:3*i));
+    MNE_moments(i, 2:4) = Q_MNE(3*(i-1)+1:3*i)/MNE_moments(i, 1);
+end
+MNE_max_norm = max(MNE_moments(:, 1));
+MNE_max_index = find(MNE_moments(:, 1) == MNE_max_norm, 1);
+MNE_max_location = LocMat(:, MNE_max_index);
+MNE_max_direction = MNE_moments(MNE_max_index, 2:4)';
+MNE_location_error = norm(LocMat(:, random_index)-MNE_max_location);
+MNE_direction_error = acosd(MNE_max_direction'*LocMat(:, random_index)/norm(LocMat(:, random_index)));
+
+for i = 1:dipoles_N
+    WMNE_moments(i, 1) = norm(Q_WMNE(3*(i-1)+1:3*i));
+    WMNE_moments(i, 2:4) = Q_WMNE(3*(i-1)+1:3*i)/WMNE_moments(i, 1);
+end
+max_norm = max(WMNE_moments(:, 1));
+max_index = find(WMNE_moments(:, 1) == max_norm, 1);
+max_location = LocMat(:, max_index);
+max_direction = WMNE_moments(max_index, 2:4)';
+WMNE_location_error = norm(LocMat(:, random_index)-max_location);
+WMNE_direction_error = acosd(max_direction'*LocMat(:, random_index)/norm(LocMat(:, random_index)));
+%% 
+random_index2 =290;
+newloc2 = LocMat(:, random_index2);
+normalized_location2 = newloc2/norm(newloc2);
+figure();
+scatter3(LocMat(1, :), LocMat(2, :), LocMat(3, :), '.');
+hold on
+scatter3(ModelParams.R(3)*pos(1, :), ModelParams.R(3)*pos(2, :), ModelParams.R(3)*pos(3, :), 'r');
+textscatter3(ModelParams.R(3)*pos(1, :), ModelParams.R(3)*pos(2, :), ModelParams.R(3)*pos(3, :), label);
+plot3([newloc2(1), newloc2(1)+normalized_location2(1)], [newloc2(2), newloc2(2)+normalized_location2(2)], [newloc2(3), newloc2(3)+normalized_location2(3)], 'g-*')
+xlabel('x');
+ylabel('y');
+zlabel('z');
+title('adding new Dipole randomly');
+%%
+M_spik2 = GainMat(:, 3*(random_index2-1)+1:3*random_index2)*normalized_location2*EEG_Interictal(1, :);
+figure();
+t = 0:1/fs:(length_ictal-1)/fs;
+for i = 1:21
+    subplot(4,6, i);
+    plot(t, M_spik2(i, :));
+    xlabel('Time (s)');
+    title(["V spiky dipol on electrod " label{i}]);
+end
+M_mean2=zeros(1,21);
+for i = 1:21
+    signal=M_spik2(i,:);
+    half_max=max(signal)/2;
+    [peaks, locs] = findpeaks(signal);
+    peaks=peaks(peaks>half_max);
+    locs=locs(peaks>half_max);
+    avgPeaks = 0;
+    for j = 1:length(peaks)
+        center = locs(j);
+        window = center-3:center+3;
+        avgPeaks = sum(signal(window));
+    end
+    avgPeaks=avgPeaks/length(peaks);
+    M_mean2(i) = avgPeaks;
+end
+normalized_mean_potential2 = (M_mean2-min(M_mean2))/(max(M_mean2)-min(M_mean2));
+figure();
+scatter3(LocMat(1, :), LocMat(2, :), LocMat(3, :),  '.');
+hold on
+scatter3(ModelParams.R(3)*pos(1, :), ModelParams.R(3)*pos(2, :), ModelParams.R(3)*pos(3, :), '*', 'CData', normalized_mean_potential2);
+textscatter3(ModelParams.R(3)*pos(1, :), ModelParams.R(3)*pos(2, :), ModelParams.R(3)*pos(3, :), label);
+colorbar;
+xlabel('x');
+ylabel('y');
+zlabel('z');
+title('Mean Potential '); 
+figure();
+Display_Potential_3D(ModelParams.R(3), normalized_mean_potential2);
+%%
+Q_MNE2 = GainMat'*(pinv(GainMat*GainMat'+MNE_alpha*eye(N_electrods))*M_mean2');
+WMNE_alpha = 1;
+Q_WMNE2 = pinv(W'*W)*GainMat'*pinv(GainMat*pinv(W'*W)*GainMat'+WMNE_alpha*eye(N_electrods))*M_mean2';
+MNE_moments2 = zeros(dipoles_N, 4);
+WMNE_moments2 = zeros(dipoles_N, 4);
+for i = 1:dipoles_N
+    MNE_moments2(i, 1) = norm(Q_MNE2(3*(i-1)+1:3*i));
+    MNE_moments2(i, 2:4) = Q_MNE2(3*(i-1)+1:3*i)/MNE_moments2(i, 1);
+    WMNE_moments2(i, 1) = norm(Q_WMNE2(3*(i-1)+1:3*i));
+    WMNE_moments2(i, 2:4) = Q_WMNE2(3*(i-1)+1:3*i)/WMNE_moments2(i, 1);
+end
+%%
+MNE_max_norm2 = max(MNE_moments2(:, 1));
+MNE_max_index2 = find(MNE_moments2(:, 1) == MNE_max_norm2, 1);
+MNE_max_location2 = LocMat(:, MNE_max_index2);
+MNE_max_direction2 = MNE_moments2(MNE_max_index2, 2:4)';
+max_norm2 = max(WMNE_moments2(:, 1));
+max_index2 = find(WMNE_moments2(:, 1) == max_norm2, 1);
+max_location2 = LocMat(:, max_index2);
+max_direction2 = WMNE_moments2(max_index2, 2:4)'; 
+MNE_location_error2 = norm(LocMat(:, random_index2)-MNE_max_location2);
+MNE_direction_error2 = acosd(MNE_max_direction2'*LocMat(:, random_index2)/norm(LocMat(:, random_index2)));
+WMNE_location_error2 = norm(LocMat(:, random_index2)-max_location2);
+WMNE_direction_error2 = acosd(max_direction2'*LocMat(:, random_index2)/norm(LocMat(:, random_index2)));
+
+%% 
+A = zeros(batch_dipoles_N, batch_dipoles_N);
+minnorm=1000000000;
+for i = 1:batch_dipoles_N
+    for j = 1:batch_dipoles_N
+        d = norm(LocMat(:, i)-LocMat(:, j));
+        if  d <= minnorm && i~=j
+            minnorm= d;
+        end
+    end
+end
+%%
+for i = 1:batch_dipoles_N
+    for j = 1:batch_dipoles_N
+        if norm(LocMat(:, i)-LocMat(:, j)) == minnorm
+            A(i, j) = 1/6;
+        end
+    end
+end
+
+A = pinv(diag(A*ones(batch_dipoles_N, 1)))*A;
+A = kron(A, eye(3));
+B = 6*(A-eye(3*batch_dipoles_N));
+L_W = B*kron(Omega, eye(3));
+alpha = 0.01;
+
+%% surf Loreta
+random_index2 = 1279;
+newloc2 = LocMat(:, random_index2);
+normalized_location2 = newloc2/norm(newloc2);
+M_spik2 = GainMat(:, 3*(random_index2-1)+1:3*random_index2)*normalized_location2*EEG_Interictal(1, :);
+M_mean2=zeros(1,21);
+for i = 1:21
+    signal=M_spik2(i,:);
+    half_max=max(signal)/2;
+    [peaks, locs] = findpeaks(signal);
+    peaks=peaks(peaks>half_max);
+    locs=locs(peaks>half_max);
+    avgPeaks = 0;
+    for j = 1:length(peaks)
+        center = locs(j);
+        window = center-3:center+3;
+        avgPeaks = sum(signal(window));
+    end
+    avgPeaks=avgPeaks/length(peaks);
+    M_mean2(i) = avgPeaks;
+end
+Q_LORETA = pinv(L_W'*L_W)*GainMat'*pinv(GainMat*pinv(L_W'*L_W)*GainMat'+alpha*eye(N_electrods))*M_mean2';
+LORETA_moments = zeros(batch_dipoles_N, 4);
+for i = 1:batch_dipoles_N
+    LORETA_moments(i, 1) = norm(Q_LORETA(3*(i-1)+1:3*i));
+    LORETA_moments(i, 2:4) = Q_LORETA(3*(i-1)+1:3*i)/LORETA_moments(i, 1);
+end
+LORETA_max_norm = max(LORETA_moments(:, 1));
+LORETA_max_index = find(LORETA_moments(:, 1) == LORETA_max_norm, 1);
+LORETA_max_location = LocMat(:, LORETA_max_index);
+LORETA_max_direction = LORETA_moments(LORETA_max_index, 2:4)';
+LORETA_location_error = norm(LocMat(:, random_index2)-LORETA_max_location);
+LORETA_direction_error = acosd(LORETA_max_direction'*LocMat(:, random_index2)/norm(LocMat(:, random_index)));
+%% deep Loreta
+random_index2 = 290;
+newloc2 = LocMat(:, random_index2);
+normalized_location2 = newloc2/norm(newloc2);
+M_spik2 = GainMat(:, 3*(random_index2-1)+1:3*random_index2)*normalized_location2*EEG_Interictal(1, :);
+M_mean2=zeros(1,21);
+for i = 1:21
+    signal=M_spik2(i,:);
+    half_max=max(signal)/2;
+    [peaks, locs] = findpeaks(signal);
+    peaks=peaks(peaks>half_max);
+    locs=locs(peaks>half_max);
+    avgPeaks = 0;
+    for j = 1:length(peaks)
+        center = locs(j);
+        window = center-3:center+3;
+        avgPeaks = sum(signal(window));
+    end
+    avgPeaks=avgPeaks/length(peaks);
+    M_mean2(i) = avgPeaks;
+end
+Q_LORETA = pinv(L_W'*L_W)*GainMat'*pinv(GainMat*pinv(L_W'*L_W)*GainMat'+alpha*eye(N_electrods))*M_mean2';
+LORETA_moments = zeros(batch_dipoles_N, 4);
+for i = 1:batch_dipoles_N
+    LORETA_moments(i, 1) = norm(Q_LORETA(3*(i-1)+1:3*i));
+    LORETA_moments(i, 2:4) = Q_LORETA(3*(i-1)+1:3*i)/LORETA_moments(i, 1);
+end
+LORETA_max_norm = max(LORETA_moments(:, 1));
+LORETA_max_index = find(LORETA_moments(:, 1) == LORETA_max_norm, 1);
+LORETA_max_location = LocMat(:, LORETA_max_index);
+LORETA_max_direction = LORETA_moments(LORETA_max_index, 2:4)';
+LORETA_location_error2 = norm(LocMat(:, random_index2)-LORETA_max_location);
+LORETA_direction_error2 = acosd(LORETA_max_direction'*LocMat(:, random_index2)/norm(LocMat(:, random_index)));
+
+%%
+distance_matrix = zeros(batch_dipoles_N,batch_dipoles_N);
+for i=1:batch_dipoles_N
+   for j=1:batch_dipoles_N
+       distance_matrix(i,j)=norm(LocMat(:, i)-LocMat(:, j));
+   end
+end
+neighbors = cell(size(distance_matrix, 1), 1);
+
+%%
+% Find the neighbors for each dipole
+for i = 1:size(distance_matrix, 1)
+    neighbors{i} = find(distance_matrix(i, :) <= 2 & distance_matrix(i, :) > 0);
+end
+
+
+%%
+
+A_LAURA = zeros(batch_dipoles_N, batch_dipoles_N);
+for i = 1:batch_dipoles_N
+    dif = LocMat(:, i)-LocMat(:, neighbors{i});
+    dis=sqrt(diag(dif'*dif));
+    Ni=length(neighbors{i});
+    W_m = mean(sqrt(sum(GainMat(:,3*(random_index2-1)+1:3*random_index2).^2, 2)));
+    A_LAURA(i,i)=W_m*26/Ni*sum(dis.^(-2));
+    neighbors_i=neighbors{i};
+    for j = 1:Ni
+        A_LAURA(i,neighbors_i(j))=W_m*dis(j)^(-2);
+    end
+end
+%%
+I3 = eye(3);
+P = kron(A_LAURA, I3);
+W_LAURA = P' * P;
+%% surf LAURA
+random_index2 = 1279;
+newloc2 = LocMat(:, random_index2);
+normalized_location2 = newloc2/norm(newloc2);
+M_spik2 = GainMat(:, 3*(random_index2-1)+1:3*random_index2)*normalized_location2*EEG_Interictal(1, :);
+M_mean2=zeros(1,21);
+for i = 1:21
+    signal=M_spik2(i,:);
+    half_max=max(signal)/2;
+    [peaks, locs] = findpeaks(signal);
+    peaks=peaks(peaks>half_max);
+    locs=locs(peaks>half_max);
+    avgPeaks = 0;
+    for j = 1:length(peaks)
+        center = locs(j);
+        window = center-3:center+3;
+        avgPeaks = sum(signal(window));
+    end
+    avgPeaks=avgPeaks/length(peaks);
+    M_mean2(i) = avgPeaks;
+end
+Q_LAURA = W_LAURA*GainMat'*pinv(GainMat*pinv(W_LAURA)*GainMat'+alpha*eye(N_electrods))*M_mean2';
+LAURA_moments = zeros(batch_dipoles_N, 4);
+for i = 1:batch_dipoles_N
+    LAURA_moments(i, 1) = norm(Q_LAURA(3*(i-1)+1:3*i));
+    LAURA_moments(i, 2:4) = Q_LAURA(3*(i-1)+1:3*i)/LAURA_moments(i, 1);
+end
+LAURA_max_norm = max(LAURA_moments(:, 1));
+LAURA_max_index = find(LAURA_moments(:, 1) == LAURA_max_norm, 1);
+LAURA_max_location = LocMat(:, LAURA_max_index);
+LAURA_max_direction = LAURA_moments(LAURA_max_index, 2:4)';
+LAURA_location_error = norm(LocMat(:, random_index2)-LAURA_max_location);
+LAURA_direction_error = acosd(LAURA_max_direction'*LocMat(:, random_index2)/norm(LocMat(:, random_index)));
+%% deep LAURA
+random_index2 = 290;
+newloc2 = LocMat(:, random_index2);
+normalized_location2 = newloc2/norm(newloc2);
+M_spik2 = GainMat(:, 3*(random_index2-1)+1:3*random_index2)*normalized_location2*EEG_Interictal(1, :);
+M_mean2=zeros(1,21);
+for i = 1:21
+    signal=M_spik2(i,:);
+    half_max=max(signal)/2;
+    [peaks, locs] = findpeaks(signal);
+    peaks=peaks(peaks>half_max);
+    locs=locs(peaks>half_max);
+    avgPeaks = 0;
+    for j = 1:length(peaks)
+        center = locs(j);
+        window = center-3:center+3;
+        avgPeaks = sum(signal(window));
+    end
+    avgPeaks=avgPeaks/length(peaks);
+    M_mean2(i) = avgPeaks;
+end
+Q_LAURA = W_LAURA*GainMat'*pinv(GainMat*pinv(W_LAURA)*GainMat'+alpha*eye(N_electrods))*M_mean2';
+LAURA_moments = zeros(batch_dipoles_N, 4);
+for i = 1:batch_dipoles_N
+    LAURA_moments(i, 1) = norm(Q_LAURA(3*(i-1)+1:3*i));
+    LAURA_moments(i, 2:4) = Q_LAURA(3*(i-1)+1:3*i)/LAURA_moments(i, 1);
+end
+LAURA_max_norm = max(LAURA_moments(:, 1));
+LAURA_max_index = find(LAURA_moments(:, 1) == LAURA_max_norm, 1);
+LAURA_max_location = LocMat(:, LAURA_max_index);
+LAURA_max_direction = LAURA_moments(LAURA_max_index, 2:4)';
+
+LAURA_location_error2 = norm(LocMat(:, random_index2)-LAURA_max_location);
+LAURA_direction_error2 = acosd(LAURA_max_direction'*LocMat(:, random_index2)/norm(LocMat(:, random_index)));
+%%
+
+%% genetic
+%options = gaoptimset('Generations',100,'StallGenLimit',50);
+%options = optimoptions(@simulannealbnd);
+%[q, cost] = ga(@(q)costFunction(q,M_mean2),  6,options);
+%options = gaoptimset('Generations',100,'StallGenLimit',50);
+%[q, cost] = ga(@(q)costFunction(q,M_mean2,GainMat), 4, [], [], [], [], [2,-10,-10,-10], [dipoles_N-2,10,10,10], [], options);
+dipoles_N=1317;
+%% 
+dipoles_indices = [1,2,3,4,9,10,11,12,23,22,194,195,202,203,204,387];
+batch_dipoles_N = length(dipoles_indices);
+dipoles_locations = LocMat(:, dipoles_indices);
+normalized_dipols_locations = zeros(3, batch_dipoles_N);
+for i = 1:batch_dipoles_N
+    normalized_dipols_locations(:, i) = dipoles_locations(:, i)/norm(dipoles_locations(:, i));
+end
+figure();
+scatter3(LocMat(1, :), LocMat(2, :), LocMat(3, :), '.');
+hold on
+scatter3(ModelParams.R(3)*pos(1, :), ModelParams.R(3)*pos(2, :), ModelParams.R(3)*pos(3, :), 'r', '*');
+textscatter3(ModelParams.R(3)*pos(1, :), ModelParams.R(3)*pos(2, :), ModelParams.R(3)*pos(3, :), label);
+for i = 1:batch_dipoles_N
+    plot3([dipoles_locations(1, i), dipoles_locations(1, i)+normalized_dipols_locations(1, i)], [dipoles_locations(2, i), dipoles_locations(2, i)+normalized_dipols_locations(2, i)], [dipoles_locations(3, i), dipoles_locations(3, i)+normalized_dipols_locations(3, i)], 'g-*')
+end
+xlabel('x');
+ylabel('y');
+zlabel('z');
+title('batch of dipols selected');
+%% 
+M_spik = zeros(N_electrods, length_ictal);
+for i = 1:batch_dipoles_N
+  M_spik = M_spik+GainMat(:, 3*(dipoles_indices(i)-1)+1:3*dipoles_indices(i))*normalized_dipols_locations(:, i)*EEG_Interictal(i, :);
+end
+figure();
+for i = 1:21
+    subplot(6, 4, i);
+    plot(t, M_spik(i, :));
+    xlabel('Time (s)');
+    title(['signal of ' label{i}]);
+end
+M_mean2=zeros(1,21);
+for i = 1:21
+    signal=M_spik(i,:);
+    half_max=max(signal)/2;
+    [peaks, locs] = findpeaks(signal);
+    peaks=peaks(peaks>half_max);
+    locs=locs(peaks>half_max);
+    avgPeaks = 0;
+    for j = 1:length(peaks)
+        center = locs(j);
+        window = center-3:center+3;
+        disp(window)
+        if center+3<=length(signal) && center-3>=1
+            avgPeaks = sum(signal(window));
+        end    
+    end
+    avgPeaks=avgPeaks/length(peaks);
+    M_mean2(i) = avgPeaks;
+end
+normalized_mean_potential = (M_mean2-min(M_mean2))/(max(M_mean2)-min(M_mean2));
+figure();
+scatter3(LocMat(1, :), LocMat(2, :), LocMat(3, :),'.');
+hold on
+scatter3(ModelParams.R(3)*pos(1, :), ModelParams.R(3)*pos(2, :), ModelParams.R(3)*pos(3, :), '*', 'CData', normalized_mean_potential);
+textscatter3(ModelParams.R(3)*pos(1, :), ModelParams.R(3)*pos(2, :), ModelParams.R(3)*pos(3, :), label);
+colorbar;
+xlabel('x');
+ylabel('y');
+zlabel('z');
+title('Mean Potential');
+figure();
+Display_Potential_3D(ModelParams.R(3), normalized_mean_potential);
+%%
+MNE_alpha = 1;
+patch_MNE_Q = GainMat'*(pinv(GainMat*GainMat'+MNE_alpha*eye(N_electrods))*M_mean2');
+Omega = zeros(dipoles_N, dipoles_N);
+for i = 1:dipoles_N
+    A = 0;
+    for j = 1:21
+        A = A+GainMat(j, 3*(i-1)+1:3*i)*GainMat(j, 3*(i-1)+1:3*i)';
+    end
+    Omega(i, i) = sqrt(A);
+end
+W = kron(Omega, eye(3));
+WMNE_alpha = 0.01;
+patch_WMNE_Q = (pinv(W'*W)*GainMat')*(pinv(GainMat*(pinv(W'*W)*GainMat')+WMNE_alpha*eye(N_electrods))*M_mean2');
+%% 
+dipoles_norm_MNE = zeros(1, dipoles_N);
+dipoles_norm_WMNE = zeros(1, dipoles_N);
+for i = 1:dipoles_N
+    dipoles_norm_MNE(i) = norm(patch_MNE_Q(3*(i-1)+1:3*i));
+    dipoles_norm_WMNE(i) = norm(patch_WMNE_Q(3*(i-1)+1:3*i));
+end
+
+labels = zeros(1, dipoles_N);
+for i = 1:batch_dipoles_N
+    labels(dipoles_indices(i)) = 1;
+end
+max_trh = 1000;
+trhs = 0:max(dipoles_norm_MNE)/(max_trh-1):max(dipoles_norm_MNE);
+sens = zeros(1, max_trh);
+spec = zeros(1, max_trh);
+for i = 1:max_trh
+    pred = dipoles_norm_MNE >= trhs(i);
+    sens(i) = mean((labels == 1 & pred == 1))/mean(labels == 1);
+    spec(i) = mean((labels == 0 & pred == 0))/mean(labels == 0);
+end
+FPR = 1-spec;
+figure();
+plot(FPR, sens);
+title('ROC of MNE');
+xlabel('FPR : 1 - Specificity');
+ylabel('Sensitivity');
+trhs = 0:max(dipoles_norm_WMNE)/(max_trh-1):max(dipoles_norm_WMNE);
+sens = zeros(1, max_trh);
+spec = zeros(1, max_trh);
+for i = 1:max_trh
+    pred = dipoles_norm_WMNE >= trhs(i);
+    sens(i) = mean((labels == 1 & pred == 1))/mean(labels == 1);
+    spec(i) = mean((labels == 0 & pred == 0))/mean(labels == 0);
+end
+FPR = 1-spec;
+figure();
+plot(FPR, sens);
+title('ROC of WMNE');
+xlabel('1 - Specificity');
+ylabel('Sensitivity');
+
+
+%%
+M_spik = zeros(N_electrods, length_ictal);
+for i = 1:batch_dipoles_N
+  M_spik = M_spik+GainMat(:, 3*(dipoles_indices(i)-1)+1:3*dipoles_indices(i))*normalized_dipols_locations(:, i)*EEG_Interictal(i, :);
+end
+figure();
+M_mean2=zeros(1,21);
+for i = 1:21
+    signal=M_spik(i,:);
+    half_max=max(signal)/2;
+    [peaks, locs] = findpeaks(signal);
+    peaks=peaks(peaks>half_max);
+    locs=locs(peaks>half_max);
+    avgPeaks = 0;
+    for j = 1:length(peaks)
+        center = locs(j);
+        window = center-3:center+3;
+        disp(window)
+        if center+3<=length(signal) && center-3>=1
+            avgPeaks = sum(signal(window));
+        end    
+    end
+    avgPeaks=avgPeaks/length(peaks);
+    M_mean2(i) = avgPeaks;
+end
+A = zeros(batch_dipoles_N, batch_dipoles_N);
+minnorm=1000000000;
+for i = 1:dipoles_N
+    for j = 1:dipoles_N
+        d = norm(LocMat(:, i)-LocMat(:, j));
+        if  d <= minnorm && i~=j
+            minnorm= d;
+        end
+    end
+end
+for i = 1:dipoles_N
+    for j = 1:dipoles_N
+        if norm(LocMat(:, i)-LocMat(:, j)) == minnorm
+            A(i, j) = 1/6;
+        end
+    end
+end
+%%
+A = pinv(diag(A*ones(dipoles_N, 1)))*A;
+A = kron(A, eye(3));
+B = 6*(A-eye(3*dipoles_N));
+L_W = B*kron(Omega, eye(3));
+alpha = 0.01;
+patch_Q_LORETA = pinv(L_W'*L_W)*GainMat'*pinv(GainMat*pinv(L_W'*L_W)*GainMat'+alpha*eye(N_electrods))*M_mean2';
+%%
+dipoles_norm_LORETA = zeros(1, dipoles_N);
+for i = 1:dipoles_N
+    dipoles_norm_LORETA(i) = norm(patch_Q_LORETA(3*(i-1)+1:3*i));
+end
+
+trhs = 0:max(dipoles_norm_LORETA)/(max_trh-1):max(dipoles_norm_LORETA);
+sens = zeros(1, max_trh);
+spec = zeros(1, max_trh);
+for i = 1:max_trh
+    pred = dipoles_norm_LORETA >= trhs(i);
+    sens(i) = mean((labels == 1 & pred == 1))/mean(labels == 1);
+    spec(i) = mean((labels == 0 & pred == 0))/mean(labels == 0);
+end
+FPR = 1-spec;
+figure();
+plot(FPR, sens);
+title('ROC of LORETA');
+xlabel('FPR:1 - Specificity');
+ylabel('Sensitivity');
+%%
+patch_Q_LAURA = W_LAURA*GainMat'*pinv(GainMat*pinv(W_LAURA)*GainMat'+alpha*eye(N_electrods))*M_mean2';
+dipoles_norm_LORETA = zeros(1, dipoles_N);
+for i = 1:dipoles_N
+    dipoles_norm_LORETA(i) = norm(patch_Q_LAURA(3*(i-1)+1:3*i));
+end
+
+trhs = 0:max(dipoles_norm_LORETA)/(max_trh-1):max(dipoles_norm_LORETA);
+sens = zeros(1, max_trh);
+spec = zeros(1, max_trh);
+
+for i = 1:max_trh
+    pred = dipoles_norm_LORETA >= trhs(i);
+    sens(i) = mean((labels == 1 & pred == 1))/mean(labels == 1);
+    spec(i) = mean((labels == 0 & pred == 0))/mean(labels == 0);
+end
+FPR = 1-spec;
+figure();
+plot(FPR, sens);
+title('ROC of LAURA');
+xlabel('FPR:1 - Specificity');
+ylabel('Sensitivity');
+%% below functions was used for genetic function i wrote but becuse of big search space it crashed
+function cost = costFunction(M,q,GainMat)
+    G = GainMat(:,3*(ceil(q(1))-1)+1:3*ceil(q(1))); 
+    D = q(2:4); 
+    estimated_M = calculateEstimatedPotential(G, D); 
+    cost = norm(M - estimated_M); 
+end
+
+function estimated_M = calculateEstimatedPotential(G, D)
+    estimated_M = G*D;
+end
